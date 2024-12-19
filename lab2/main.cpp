@@ -1,133 +1,148 @@
-#include <iostream>
-#include <vector>
-#include <pthread.h>
-#include <mutex>
-#include <algorithm>
-#include <sys/time.h>
+#include <cstdio>
 #include <cstdlib>
-#include <cmath>
+#include <cstring>
+#include <pthread.h>
+#include <semaphore.h>
+#include <sys/time.h>
+#include <unistd.h>
+#include <vector>
 
-std::mutex io_mutex; // Для синхронизации вывода
-
+pthread_mutex_t ioMutex;
+sem_t threadLimit;
 struct ThreadData {
-    std::vector<int> *array;
-    int left;
-    int right;
-    int max_threads;
+  std::vector<int> *array;
+  int left;
+  int right;
 };
 
-void merge(std::vector<int> &array, int left, int mid, int right) {
-    int n1 = mid - left + 1;
-    int n2 = right - mid;
+void writeToStdout(const char *str) { write(STDOUT_FILENO, str, strlen(str)); }
 
-    std::vector<int> L(n1), R(n2);
-    for (int i = 0; i < n1; ++i)
-        L[i] = array[left + i];
-    for (int i = 0; i < n2; ++i)
-        R[i] = array[mid + 1 + i];
-
-    int i = 0, j = 0, k = left;
-    while (i < n1 && j < n2) {
-        if (L[i] <= R[j]) {
-            array[k] = L[i];
-            ++i;
-        } else {
-            array[k] = R[j];
-            ++j;
-        }
-        ++k;
-    }
-
-    while (i < n1) {
-        array[k] = L[i];
-        ++i;
-        ++k;
-    }
-
-    while (j < n2) {
-        array[k] = R[j];
-        ++j;
-        ++k;
-    }
+void printArray(const std::vector<int> &array) {
+  pthread_mutex_lock(&ioMutex);
+  for (size_t i = 0; i < array.size(); ++i) {
+    char buffer[16];
+    snprintf(buffer, sizeof(buffer), "%d ", array[i]);
+    writeToStdout(buffer);
+  }
+  writeToStdout("\n");
+  pthread_mutex_unlock(&ioMutex);
 }
 
-void *merge_sort(void *arg) {
-    ThreadData *data = (ThreadData *)arg;
-    std::vector<int> &array = *(data->array);
-    int left = data->left;
-    int right = data->right;
-    int max_threads = data->max_threads;
+void merge(std::vector<int> &array, int left, int mid, int right) {
+  int n1 = mid - left + 1;
+  int n2 = right - mid;
 
-    if (left >= right)
-        pthread_exit(nullptr);
+  std::vector<int> leftArray(n1), rightArray(n2);
+  for (int i = 0; i < n1; ++i)
+    leftArray[i] = array[left + i];
+  for (int i = 0; i < n2; ++i)
+    rightArray[i] = array[mid + 1 + i];
 
-    int mid = left + (right - left) / 2;
-
-    pthread_t left_thread, right_thread;
-    ThreadData left_data = {&array, left, mid, max_threads / 2};
-    ThreadData right_data = {&array, mid + 1, right, max_threads / 2};
-
-    bool use_threads = max_threads > 1;
-
-    if (use_threads) {
-        pthread_create(&left_thread, nullptr, merge_sort, &left_data);
-        pthread_create(&right_thread, nullptr, merge_sort, &right_data);
-        pthread_join(left_thread, nullptr);
-        pthread_join(right_thread, nullptr);
+  int i = 0, j = 0, k = left;
+  while (i < n1 && j < n2) {
+    if (leftArray[i] <= rightArray[j]) {
+      array[k] = leftArray[i];
+      ++i;
     } else {
-        merge_sort(&left_data);
-        merge_sort(&right_data);
+      array[k] = rightArray[j];
+      ++j;
     }
+    ++k;
+  }
 
-    merge(array, left, mid, right);
-    pthread_exit(nullptr);
+  while (i < n1) {
+    array[k] = leftArray[i];
+    ++i;
+    ++k;
+  }
+
+  while (j < n2) {
+    array[k] = rightArray[j];
+    ++j;
+    ++k;
+  }
+}
+
+void *mergeSort(void *arg) {
+  ThreadData *data = (ThreadData *)arg;
+  std::vector<int> &array = *(data->array);
+  int left = data->left;
+  int right = data->right;
+
+  if (left >= right) {
+    sem_post(&threadLimit);
+    return nullptr;
+  }
+
+  int mid = left + (right - left) / 2;
+
+  pthread_t leftThread, rightThread;
+  ThreadData leftData = {&array, left, mid};
+  ThreadData rightData = {&array, mid + 1, right};
+
+  sem_wait(&threadLimit);
+  pthread_create(&leftThread, nullptr, mergeSort, &leftData);
+
+  sem_wait(&threadLimit);
+  pthread_create(&rightThread, nullptr, mergeSort, &rightData);
+
+  pthread_join(leftThread, nullptr);
+  pthread_join(rightThread, nullptr);
+
+  merge(array, left, mid, right);
+
+  sem_post(&threadLimit);
+  return nullptr;
 }
 
 int main(int argc, char **argv) {
-    if (argc != 3) {
-        std::cerr << "Usage: " << argv[0] << " <max_threads> <array_size>\n";
-        return 1;
-    }
+  if (argc != 3) {
+    writeToStdout("Usage: ./mergeSort <maxThreads> <arraySize>\n");
+    return 1;
+  }
 
-    int max_threads = std::atoi(argv[1]);
-    int array_size = std::atoi(argv[2]);
+  int maxThreads = std::atoi(argv[1]);
+  int arraySize = std::atoi(argv[2]);
 
-    if (max_threads < 1 || array_size < 1) {
-        std::cerr << "Both max_threads and array_size must be positive integers.\n";
-        return 1;
-    }
+  if (maxThreads < 1 || arraySize < 1) {
+    writeToStdout("Both maxThreads and arraySize must be positive integers.\n");
+    return 1;
+  }
 
-    std::srand(std::time(nullptr));
-    std::vector<int> array(array_size);
+  pthread_mutex_init(&ioMutex, nullptr);
+  sem_init(&threadLimit, 0, maxThreads);
 
-    for (int &x : array)
-        x = std::rand() % 100;
+  std::srand(time(nullptr));
+  std::vector<int> array(arraySize);
 
-    {
-        std::lock_guard<std::mutex> lock(io_mutex);
-        std::cout << "Unsorted array:\n";
-        for (int x : array)
-            std::cout << x << " ";
-        std::cout << "\n";
-    }
+  for (int &x : array)
+    x = std::rand() % 100;
 
-    ThreadData initial_data = {&array, 0, array_size - 1, max_threads};
+  writeToStdout("Unsorted array:\n");
+  printArray(array);
 
-    struct timeval start, end;
-    gettimeofday(&start, nullptr);
-    merge_sort(&initial_data);
-    gettimeofday(&end, nullptr);
+  ThreadData initialData = {&array, 0, arraySize - 1};
 
-    double elapsed_time = (end.tv_sec - start.tv_sec) + (end.tv_usec - start.tv_usec) / 1e6;
+  struct timeval start, end;
+  gettimeofday(&start, nullptr);
 
-    {
-        std::lock_guard<std::mutex> lock(io_mutex);
-        std::cout << "Sorted array:\n";
-        for (int x : array)
-            std::cout << x << " ";
-        std::cout << "\n";
-        std::cout << "Time elapsed: " << elapsed_time << " seconds\n";
-    }
+  sem_wait(&threadLimit);
+  mergeSort(&initialData);
 
-    return 0;
+  gettimeofday(&end, nullptr);
+
+  double elapsedTime =
+      (end.tv_sec - start.tv_sec) + (end.tv_usec - start.tv_usec) / 1e6;
+
+  writeToStdout("Sorted array:\n");
+  printArray(array);
+
+  char buffer[64];
+  snprintf(buffer, sizeof(buffer), "Time elapsed: %.6f seconds\n", elapsedTime);
+  writeToStdout(buffer);
+
+  pthread_mutex_destroy(&ioMutex);
+  sem_destroy(&threadLimit);
+
+  return 0;
 }
