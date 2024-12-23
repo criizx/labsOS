@@ -1,3 +1,4 @@
+#include <algorithm>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -9,6 +10,7 @@
 
 pthread_mutex_t ioMutex;
 sem_t threadLimit;
+
 struct ThreadData {
   std::vector<int> *array;
   int left;
@@ -28,7 +30,7 @@ void printArray(const std::vector<int> &array) {
   pthread_mutex_unlock(&ioMutex);
 }
 
-void merge(std::vector<int> &array, int left, int mid, int right) {
+void mergeArrays(std::vector<int> &array, int left, int mid, int right) {
   int n1 = mid - left + 1;
   int n2 = right - mid;
 
@@ -69,6 +71,7 @@ void *mergeSort(void *arg) {
   int left = data->left;
   int right = data->right;
 
+  char debugBuffer[64];
   if (left >= right) {
     sem_post(&threadLimit);
     return nullptr;
@@ -80,16 +83,23 @@ void *mergeSort(void *arg) {
   ThreadData leftData = {&array, left, mid};
   ThreadData rightData = {&array, mid + 1, right};
 
-  sem_wait(&threadLimit);
-  pthread_create(&leftThread, nullptr, mergeSort, &leftData);
+  if (pthread_create(&leftThread, nullptr, mergeSort, &leftData) != 0) {
+    writeToStdout(
+        "Failed to create left thread, falling back to single-threaded\n");
+    mergeSort(&leftData);
+    sem_post(&threadLimit);
+  }
 
-  sem_wait(&threadLimit);
-  pthread_create(&rightThread, nullptr, mergeSort, &rightData);
+  if (pthread_create(&rightThread, nullptr, mergeSort, &rightData) != 0) {
+    writeToStdout(
+        "Failed to create right thread, falling back to single-threaded\n");
+    mergeSort(&rightData);
+    sem_post(&threadLimit);
+  }
 
   pthread_join(leftThread, nullptr);
   pthread_join(rightThread, nullptr);
-
-  merge(array, left, mid, right);
+  mergeArrays(array, left, mid, right);
 
   sem_post(&threadLimit);
   return nullptr;
