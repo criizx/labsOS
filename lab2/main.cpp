@@ -83,15 +83,11 @@ void *mergeSort(void *arg) {
   ThreadData rightData = {&array, mid + 1, right};
 
   if (pthread_create(&leftThread, nullptr, mergeSort, &leftData) != 0) {
-    writeToStdout(
-        "Failed to create left thread, falling back to single-threaded\n");
     mergeSort(&leftData);
     sem_post(&threadLimit);
   }
 
   if (pthread_create(&rightThread, nullptr, mergeSort, &rightData) != 0) {
-    writeToStdout(
-        "Failed to create right thread, falling back to single-threaded\n");
     mergeSort(&rightData);
     sem_post(&threadLimit);
   }
